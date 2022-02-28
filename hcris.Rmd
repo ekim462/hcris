@@ -1,0 +1,337 @@
+---
+title: "ECON 470 HW 2"
+author: "Genia Kim"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(knitr) 
+library(scales)
+library(cobalt)
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, ggplot2, dplyr, lubridate)
+
+```
+
+```{r}
+#load the data
+HCRIS_Data_v1996 <- readRDS("~/R/hcris/HCRIS_Data_v1996.rds")
+HCRIS_Data_v2010 <- readRDS("~/R/hcris/HCRIS_Data_v2010.rds")
+```
+
+
+# Summarize the data
+
+1. How many hospitals submitted the 1996 version of the HCRIS reports in 2010? How is that even possible?
+
+In 2010, 3851 hospitals submitted the 1996 version of the HCRIS reports. Even though 2010 had a new HCRIS report, not all hospitals used this version in 2010. This is possible because hospitals have different fiscal years. Depending on when their fiscal year ends, hospitals may have decided to use the 1996 version over the 2010 version.
+
+```{r}
+data96 <- HCRIS_Data_v1996 %>%
+  ungroup() %>%
+  filter(year==2010) 
+
+nrow(data96)
+```
+
+
+2. How many hospitals filed more than one report in the same year? Show your answer as a line graph of the number of hospitals over time.
+
+The graph illustrates the number of hospitals that filed more than one report in the same year. In general, the number of hospitals that filed more than one report in the same year is greater prior to 2010 and less for the years after 2010. 
+
+```{r}
+HCRIS_Data_v1996 = HCRIS_Data_v1996 %>%
+  mutate(hvbp_payment=NA, hrrp_payment=NA)
+
+final_hcris=rbind(HCRIS_Data_v1996,HCRIS_Data_v2010) %>%
+  mutate(fy_end=mdy(fy_end),fy_start=mdy(fy_start),
+         date_processed=mdy(date_processed),date_created=mdy(date_created),
+         tot_discounts=abs(tot_discounts), hrrp_payment=abs(hrrp_payment)) %>%
+  mutate(fyear=year(fy_end)) %>%
+  arrange(provider_number,fyear) %>%
+  select(-year)
+
+final_hcris %>% group_by(fyear) %>% count()
+
+dup_hcris <- final_hcris %>% 
+  ungroup() %>%
+  group_by(provider_number, fyear)%>%
+  select(provider_number, fyear) %>%
+  summarize(report_count=n())%>%
+  filter(report_count>1)
+
+dup_graph <- dup_hcris %>%
+  group_by(fyear)%>%
+  select(fyear) %>%
+  summarize(duplicate=n()) %>%
+  ggplot(aes(x=fyear, y=duplicate, group=1)) +
+  stat_summary(fun = "mean", geom="line", na.rm=TRUE) +
+  labs(
+    x="Year",
+    y="Number of Hospitals",
+    title="Number of hospitals that filed more than one report in the same year"
+  )
+
+dup_graph
+```
+
+
+3. After removing/combining multiple reports, how many unique hospital IDs (Medicare provider numbers) exist in the data? Provide a line graph plotting the number of hospitals in each year.
+
+There are roughly 6000 unique hospital IDs over the years in the data. The first and last few years show that there were fewer unique hospital IDs. This may be due to when the data was collected.
+
+```{r}
+
+HCRIS_Data <- readRDS("~/R/hcris/HCRIS_Data.rds")
+
+dedupe_hcris <- HCRIS_Data %>%
+  ungroup() %>%
+  group_by(provider_number, year)%>%
+  select(provider_number, year) %>%
+  summarize(report_count=n())
+  
+  dedupe_graph <- dedupe_hcris %>%
+  group_by(year)%>%
+  select(year) %>%
+  summarize(hospital=n()) %>%
+  ggplot(aes(x=year, y=hospital, group=1)) +
+  stat_summary(fun = "mean", geom="line", na.rm=TRUE) +
+  labs(
+    x="Year",
+    y="Number of Hospitals",
+    title="Number of unique hospital IDs"
+  )
+
+dedupe_graph
+
+
+
+
+```
+
+
+4. What is the distribution of total charges (tot_charges in the data) in each year? Show your results with a “violin” plot, with charges on the y-axis and years on the x-axis. 
+
+The violin plot illustrates that the trend for total charges has been steadily increasing. I scaled the y-axis such that the distribution would be easier to interpret. This led much of the outliers to be cut out, especially for the later years. Even so, the distributions shown by the box plots demonstrates that median total charges are increasing.
+
+```{r}
+
+charge <- HCRIS_Data %>% 
+  ungroup() %>%
+  group_by(year)%>%
+  select(tot_charges, year)
+
+charge_dist <- charge %>% 
+  ggplot(aes(x = year, y = tot_charges)) +
+#  scale_y_continuous(trans='log10')+
+  scale_y_continuous(limits = c(0, 50000000),labels = comma)+
+geom_violin(aes(group = year), 
+                  scale = 'width', fill = alpha('red', 0.2), 
+                  color = alpha('red',0.2))+
+   geom_boxplot(aes(group = year), width=0.2, color="grey", alpha=0.2)+
+    stat_summary(fun.y = "median", geom = "point", size = 2) +
+  stat_summary(fun.y = "median", geom = "line", aes(group = 1),
+               size = 0.8)+
+  labs(
+    x="Year",
+    y="Total Charges ($)",
+    title="Distribution of total charges in each year"
+  )
+
+  theme_classic()  
+ charge_dist
+```
+
+5. Create the same violin plot with estimated prices on the y-axis. Recall our formula for estimating prices from class.
+
+From the violin plot, it is evident that the estimated prices are increasing. Furthermore, the distribution of estimate prices is also increasing. This can be seen from the increase in size of the box plots in the later years as compared to the earlier years. I also needed to scale the y-axis down, leading the many outliers of the later years to be cutoff.
+
+```{r}
+
+price_est <- HCRIS_Data%>%
+mutate(discount_factor = 1-tot_discounts/tot_charges) %>%
+mutate(price_num = (ip_charges + icu_charges + ancillary_charges)*discount_factor - tot_mcare_payment) %>%
+mutate(price_denom = tot_discharges - mcare_discharges) %>%
+mutate(price = price_num/price_denom) %>%
+ ungroup() %>%
+  group_by(year)%>%
+  select(price, year) 
+ 
+price_dist <- price_est %>%
+  ggplot(aes(x = year, y = price)) +
+   scale_y_continuous(limits = c(0, 20000),labels = comma)+
+  geom_violin(aes(group = year), 
+                  scale = 'width', fill = alpha('red', 0.2), 
+                  color = alpha('red',0.2))+
+   geom_boxplot(aes(group = year), width=0.2, color="grey", alpha=0.2)+
+    stat_summary(fun.y = "median", geom = "point", size = 2) +
+  stat_summary(fun.y = "median", geom = "line", aes(group = 1),
+               size = 0.8)+
+  labs(
+    x="Year",
+    y="Price Estimates ($)",
+    title="Distribution of price estimates in each year"
+  )
+
+  theme_classic()  
+ price_dist
+```
+
+6. Form an indicator variable set to 1 if the hospital incurred a penalty under the readmission reduction program. Plot the share of hospitals penalized in each year.
+
+The readmission reduction program is labeled hrrp in the data. The graph shows a sharp increase in the share of penalized hospitals in 2012. Upon further research, I found that this program began in 2012. As such, the drastic change makes sense. The share of hospitals that incurred a penalty shot to nearly 100 percent from the program start year. Much of the data also reports NA values, meaning that this graph is potentially missing important information.
+
+```{r}
+hosp_pen <- HCRIS_Data %>%
+  na.omit() %>%
+  mutate(hrrp_pen = ifelse(hrrp_payment>0, 1,0))%>%
+  group_by(year) %>%
+  select(year, hrrp_pen) %>%
+  ggplot(aes(x=year, y=hrrp_pen, group=1)) +
+  stat_summary(fun="mean", geom="line") +
+  labs(
+    x="Year",
+    y="Share of penalized hospitals",
+    title="Share of hospitals that incurred a penalty under the HRRP"
+  )
+
+hosp_pen
+```
+
+
+# Estimate ATEs
+For the rest of the assignment, you should include only observations in 2012. So we are now dealing with cross-sectional data in which some hospitals are penalized and some are not. Please also define penalty as whether the sum of the HRRP and HVBP amounts are negative (i.e., a net penalty under the two programs). 
+
+1. Calculate the average price among penalized versus non-penalized hospitals.
+
+The average price among penalized hospitals is 9896.31. For non-penalized hospitals, the average price of penalties is 9560.41.
+
+```{r}
+avg_price <- HCRIS_Data%>%
+mutate(discount_factor = 1-tot_discounts/tot_charges) %>%
+mutate(price_num = (ip_charges + icu_charges + ancillary_charges)*discount_factor - tot_mcare_payment) %>%
+mutate(price_denom = tot_discharges - mcare_discharges) %>%
+mutate(price = price_num/price_denom)
+
+#slide 75
+final.hcris <- avg_price %>% ungroup() %>%
+  filter(price_denom>100, !is.na(price_denom),
+         price_num>0, !is.na(price_num),
+         price<100000,
+         beds>30, year==2012) %>%
+  mutate(hvbp_payment = ifelse(is.na(hvbp_payment),0,hvbp_payment),
+         hrrp_payment = ifelse(is.na(hrrp_payment),0,abs(hrrp_payment)),
+         penalty=(hvbp_payment-hrrp_payment<0))
+
+
+
+avg_pen <- final.hcris %>%
+ filter(!is.na(price)) %>%
+  filter(!is.na(penalty)) %>%
+  group_by(penalty) %>%
+  select(price,penalty) %>%
+  summarize(avg_price=mean(price))%>%
+  pivot_wider(names_from ="penalty", values_from = "avg_price")
+
+avg_pen
+```
+
+
+2. Split hospitals into quartiles based on bed size. To do this, create 4 new indicator variables, where each variable is set to 1 if the hospital’s bed size falls into the relevant quartile.
+
+```{r}
+summary(final.hcris$beds)
+
+final <- final.hcris %>%
+  na.omit() %>%
+  mutate(quart1 = ifelse(beds<=92, 1,0)) %>%
+  mutate(quart2 = ifelse(92<beds & beds<=160,1,0)) %>%
+  mutate(quart3 = ifelse(160<beds & beds<=282,1,0)) %>%
+  mutate(quart4 = ifelse(beds>282,1,0))
+```
+
+
+3. Find the average treatment effect using nearest neighbor matching (1-to-1) with inverse variance distance based on quartiles of bed size.
+
+```{r}
+bed_match <- final %>%
+  select(quart1, quart2, quart3, quart4)
+
+m.nn.var <- Matching::Match(Y=final$price,
+                            Tr=final$penalty,
+                            X=bed_match,
+                            M=1,
+                            Weight=1,
+                            estimand="ATE")
+summary(m.nn.var)
+#outcome,
+#treatment
+#variables on matching
+#M=number of matches for each we want
+
+
+```
+
+
+4. Find the average treatment effect using nearest neighbor matching (1-to-1) with Mahalanobis distance based on quartiles of bed size.
+
+```{r}
+m.nn.md <- Matching::Match(Y=final$price,
+                            Tr=final$penalty,
+                            X=bed_match,
+                            M=1,
+                            Weight=2,
+                            estimand="ATE")
+summary(m.nn.md)
+```
+
+
+5. Find the average treatment effect using inverse propensity weighting, where the propensity scores are based on quartiles of bed size.
+
+```{r}
+logit.model <- glm(penalty ~ quart1 + quart2 + quart3 + quart4, family=binomial, data=final)
+ps <- fitted(logit.model)
+m.nn.ps <- Matching::Match(Y=final$price,
+                            Tr=final$penalty,
+                            X=ps,
+                            M=1,
+                            estimand="ATE")
+summary(m.nn.ps)
+```
+
+
+6. Find the average treatment effect using a single linear regression.
+
+```{r}
+reg1.dat <- final %>% filter(penalty==1, complete.cases(.))
+reg1 <- lm(price ~ quart1 + quart2 + quart3 + quart4, data=reg1.dat)
+
+reg0.dat <- final %>% filter(penalty==0, complete.cases(.))
+reg0 <-lm(price ~ quart1 + quart2 + quart3 + quart4, data=reg0.dat)
+
+pred1 <- predict(reg1, new=final)
+pred0 <- predict(reg0, new=final)
+mean(pred1-pred0)
+```
+
+
+7. With these different treatment effect estimators, are the results similar, identical, very different?
+
+The different treatment effect estimators yielded identical results. All estimators gave a negative effect of -1.497. 
+
+8. Do you think you’ve estimated a causal effect of the penalty? Why or why not? (just a couple of sentences)
+
+I think that this is not enough to say that we estimated the causal effect of the penalty. Using matching of bed sizes by quartiles addresses potential biases that may result from the size of the hospital. However, we only matched on bed size of hospitals. There are other variables that are common to penalized hospitals that may impact the difference in price. Matching on additional variables may provide stronger evidence for a causal effect.
+
+
+
+
+
+
